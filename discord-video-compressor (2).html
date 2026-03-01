@@ -1,0 +1,805 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Discord Video Compressor — Send videos to your friends without going through limits</title>
+<script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0e0f14;
+    --surface: #16181f;
+    --surface2: #1e2028;
+    --border: #2a2d3a;
+    --accent: #5865f2;
+    --accent-bright: #7289ff;
+    --accent-glow: rgba(88,101,242,0.3);
+    --green: #3ba55c;
+    --yellow: #faa61a;
+    --red: #ed4245;
+    --text: #e8eaf0;
+    --muted: #72758a;
+    --mono: 'IBM Plex Mono', monospace;
+    --sans: 'Syne', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 40px 20px 80px;
+    position: relative;
+    overflow-x: hidden;
+  }
+
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(88,101,242,0.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(88,101,242,0.04) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  body::after {
+    content: '';
+    position: fixed;
+    top: -200px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 800px;
+    height: 500px;
+    background: radial-gradient(ellipse, rgba(88,101,242,0.12) 0%, transparent 70%);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .container {
+    width: 100%;
+    max-width: 720px;
+    position: relative;
+    z-index: 1;
+  }
+
+  header {
+    text-align: center;
+    margin-bottom: 48px;
+    animation: fadeDown 0.6s ease both;
+  }
+
+  .header-badges {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 20px;
+  }
+
+  .logo-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 100px;
+    padding: 6px 14px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--accent-bright);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .no-account-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(59,165,92,0.12);
+    border: 1px solid rgba(59,165,92,0.3);
+    border-radius: 100px;
+    padding: 6px 12px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--green);
+    letter-spacing: 0.05em;
+  }
+
+  .no-account-badge::before {
+    content: '●';
+    font-size: 8px;
+    animation: pulse 2s infinite;
+  }
+
+  h1 {
+    font-size: clamp(28px, 5vw, 46px);
+    font-weight: 800;
+    line-height: 1.1;
+    letter-spacing: -0.02em;
+    background: linear-gradient(135deg, #fff 30%, var(--accent-bright));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 12px;
+  }
+
+  .subtitle {
+    color: var(--muted);
+    font-size: 15px;
+    font-weight: 400;
+    letter-spacing: 0.01em;
+    font-family: var(--mono);
+  }
+
+  .section-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 12px;
+    font-family: var(--mono);
+  }
+
+  .tier-section { margin-bottom: 20px; animation: fadeUp 0.6s 0.1s ease both; }
+
+  .tier-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+  }
+
+  .tier-card {
+    background: var(--surface);
+    border: 2px solid var(--border);
+    border-radius: 14px;
+    padding: 16px;
+    cursor: pointer;
+    transition: all 0.2s;
+    position: relative;
+    overflow: hidden;
+    user-select: none;
+  }
+
+  .tier-card::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    transition: opacity 0.2s;
+  }
+
+  .tier-card.free::before   { background: radial-gradient(circle at top left, rgba(58,165,92,0.12), transparent 60%); }
+  .tier-card.basic::before  { background: radial-gradient(circle at top left, rgba(250,166,26,0.12), transparent 60%); }
+  .tier-card.nitro::before  { background: radial-gradient(circle at top left, rgba(88,101,242,0.12), transparent 60%); }
+
+  .tier-card:hover { border-color: var(--muted); transform: translateY(-1px); }
+  .tier-card.selected.free  { border-color: var(--green); }
+  .tier-card.selected.basic { border-color: var(--yellow); }
+  .tier-card.selected.nitro { border-color: var(--accent); }
+  .tier-card.selected::before { opacity: 1; }
+
+  .tier-dot { width: 10px; height: 10px; border-radius: 50%; margin-bottom: 10px; }
+  .free  .tier-dot { background: var(--green);         box-shadow: 0 0 8px var(--green); }
+  .basic .tier-dot { background: var(--yellow);        box-shadow: 0 0 8px var(--yellow); }
+  .nitro .tier-dot { background: var(--accent-bright); box-shadow: 0 0 8px var(--accent-bright); }
+
+  .tier-name  { font-size: 13px; font-weight: 700; letter-spacing: 0.02em; margin-bottom: 4px; }
+  .tier-limit { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+
+  .dropzone {
+    background: var(--surface);
+    border: 2px dashed var(--border);
+    border-radius: 20px;
+    padding: 60px 40px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.25s;
+    margin-bottom: 20px;
+    position: relative;
+    overflow: hidden;
+    animation: fadeUp 0.6s 0.15s ease both;
+  }
+
+  .dropzone::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(circle at center, rgba(88,101,242,0.06), transparent 70%);
+    opacity: 0;
+    transition: opacity 0.3s;
+  }
+
+  .dropzone:hover, .dropzone.drag-over {
+    border-color: var(--accent);
+    background: var(--surface2);
+  }
+  .dropzone:hover::before, .dropzone.drag-over::before { opacity: 1; }
+
+  .drop-icon {
+    width: 52px; height: 52px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    display: flex; align-items: center; justify-content: center;
+    margin: 0 auto 16px;
+    transition: all 0.2s;
+  }
+  .dropzone:hover .drop-icon, .dropzone.drag-over .drop-icon {
+    border-color: var(--accent);
+    background: var(--accent-glow);
+  }
+  .drop-icon svg { width: 24px; height: 24px; color: var(--accent-bright); }
+  .drop-title { font-size: 17px; font-weight: 700; margin-bottom: 6px; letter-spacing: -0.01em; }
+  .drop-sub   { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  #fileInput  { display: none; }
+
+  .file-info {
+    display: none;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 18px 20px;
+    margin-bottom: 20px;
+    gap: 14px;
+    align-items: center;
+  }
+  .file-info.visible { display: flex; animation: fadeUp 0.3s ease both; }
+
+  .file-icon {
+    width: 44px; height: 44px;
+    background: var(--accent-glow);
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+    border: 1px solid rgba(88,101,242,0.3);
+  }
+  .file-icon svg { width: 20px; height: 20px; color: var(--accent-bright); }
+  .file-details { flex: 1; min-width: 0; }
+  .file-name {
+    font-size: 14px; font-weight: 600;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    margin-bottom: 3px;
+  }
+  .file-meta { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+
+  .file-remove {
+    width: 30px; height: 30px;
+    background: none; border: 1px solid var(--border); border-radius: 8px;
+    color: var(--muted); cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.2s; flex-shrink: 0;
+  }
+  .file-remove:hover { border-color: var(--red); color: var(--red); }
+  .file-remove svg { width: 14px; height: 14px; }
+
+  .compress-btn {
+    width: 100%; padding: 16px;
+    background: var(--accent); border: none; border-radius: 14px;
+    color: white; font-family: var(--sans); font-size: 15px; font-weight: 700;
+    letter-spacing: 0.02em; cursor: pointer; transition: all 0.25s;
+    position: relative; overflow: hidden; margin-bottom: 20px;
+    animation: fadeUp 0.6s 0.2s ease both;
+  }
+  .compress-btn::before {
+    content: '';
+    position: absolute; inset: 0;
+    background: linear-gradient(135deg, transparent 40%, rgba(255,255,255,0.1));
+  }
+  .compress-btn:hover:not(:disabled) {
+    background: var(--accent-bright);
+    transform: translateY(-1px);
+    box-shadow: 0 8px 30px rgba(88,101,242,0.4);
+  }
+  .compress-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .progress-section {
+    display: none;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 20px 24px;
+    margin-bottom: 20px;
+  }
+  .progress-section.visible { display: block; animation: fadeUp 0.3s ease both; }
+
+  .progress-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 14px;
+  }
+  .progress-status { font-size: 13px; font-weight: 600; }
+  .progress-pct    { font-family: var(--mono); font-size: 12px; color: var(--accent-bright); }
+
+  .progress-bar-track {
+    height: 6px; background: var(--surface2);
+    border-radius: 100px; overflow: hidden; margin-bottom: 10px;
+  }
+  .progress-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent), var(--accent-bright));
+    border-radius: 100px; width: 0%; transition: width 0.4s ease;
+    position: relative;
+  }
+  .progress-bar-fill::after {
+    content: '';
+    position: absolute; right: 0; top: 50%; transform: translateY(-50%);
+    width: 10px; height: 10px;
+    background: white; border-radius: 50%;
+    box-shadow: 0 0 10px var(--accent-bright);
+  }
+
+  .progress-log {
+    font-family: var(--mono); font-size: 11px; color: var(--muted);
+    line-height: 1.8; overflow: hidden; height: 38px;
+    display: flex; flex-direction: column; justify-content: flex-end;
+  }
+
+  .result-section {
+    display: none;
+    background: var(--surface);
+    border: 1px solid var(--green);
+    border-radius: 16px;
+    padding: 20px 24px;
+    margin-bottom: 20px;
+  }
+  .result-section.visible { display: block; animation: fadeUp 0.3s ease both; }
+  .result-section.error   { border-color: var(--red); }
+
+  .result-header {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
+  }
+  .result-badge {
+    width: 28px; height: 28px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  }
+  .result-badge.success { background: rgba(59,165,92,0.2); color: var(--green); }
+  .result-badge.error   { background: rgba(237,66,69,0.2);  color: var(--red); }
+  .result-badge svg { width: 14px; height: 14px; }
+  .result-title { font-size: 14px; font-weight: 700; }
+
+  .result-stats {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    gap: 10px; margin-bottom: 16px;
+  }
+  .stat-box { background: var(--surface2); border-radius: 10px; padding: 12px; text-align: center; }
+  .stat-val  { font-family: var(--mono); font-size: 16px; font-weight: 500; margin-bottom: 4px; }
+  .stat-lbl  { font-family: var(--mono); font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+
+  .download-btn {
+    width: 100%; padding: 13px;
+    background: var(--green); border: none; border-radius: 12px;
+    color: white; font-family: var(--sans); font-size: 14px; font-weight: 700;
+    cursor: pointer; transition: all 0.2s;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    text-decoration: none;
+  }
+  .download-btn:hover {
+    opacity: 0.9; transform: translateY(-1px);
+    box-shadow: 0 6px 20px rgba(59,165,92,0.3);
+  }
+  .download-btn svg { width: 16px; height: 16px; }
+
+  .error-msg {
+    font-family: var(--mono); font-size: 12px; color: var(--red);
+    margin-top: 6px; line-height: 1.6;
+  }
+
+  .how-it-works { animation: fadeUp 0.6s 0.25s ease both; }
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .step { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px; }
+  .step-num  { font-family: var(--mono); font-size: 10px; color: var(--accent-bright); letter-spacing: 0.1em; margin-bottom: 6px; }
+  .step-text { font-size: 12px; color: var(--muted); line-height: 1.5; }
+
+  @keyframes fadeDown { from { opacity:0; transform:translateY(-20px);} to {opacity:1;transform:translateY(0);} }
+  @keyframes fadeUp   { from { opacity:0; transform:translateY(16px); } to {opacity:1;transform:translateY(0);} }
+  @keyframes pulse    { 0%,100%{opacity:1;} 50%{opacity:0.4;} }
+
+  @media (max-width: 480px) {
+    .steps { grid-template-columns: 1fr; }
+    .dropzone { padding: 40px 20px; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <div class="header-badges">
+      <div class="logo-pill">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057c.002.022.015.043.03.054a19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03z"/></svg>
+        Discord Video Compressor
+      </div>
+      <div class="no-account-badge">No account needed</div>
+    </div>
+    <h1>Send videos without<br>hitting limits</h1>
+    <p class="subtitle">// runs entirely in your browser · nothing is uploaded · free forever</p>
+  </header>
+
+  <!-- Tier selector -->
+  <div class="tier-section">
+    <div class="section-label">Target Discord Tier</div>
+    <div class="tier-grid">
+      <div class="tier-card free" onclick="selectTier(9.5, this)">
+        <div class="tier-dot"></div>
+        <div class="tier-name">Free</div>
+        <div class="tier-limit">≤ 9.5 MB</div>
+      </div>
+      <div class="tier-card basic selected" onclick="selectTier(47, this)">
+        <div class="tier-dot"></div>
+        <div class="tier-name">Basic Nitro</div>
+        <div class="tier-limit">≤ 47 MB</div>
+      </div>
+      <div class="tier-card nitro" onclick="selectTier(495, this)">
+        <div class="tier-dot"></div>
+        <div class="tier-name">Nitro</div>
+        <div class="tier-limit">≤ 495 MB</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Drop zone -->
+  <div class="dropzone" id="dropzone"
+       onclick="document.getElementById('fileInput').click()"
+       ondragover="event.preventDefault(); this.classList.add('drag-over')"
+       ondragleave="this.classList.remove('drag-over')"
+       ondrop="handleDrop(event)">
+    <div class="drop-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <polyline points="17 8 12 3 7 8"/>
+        <line x1="12" y1="3" x2="12" y2="15"/>
+      </svg>
+    </div>
+    <div class="drop-title">Drop your video here</div>
+    <div class="drop-sub">MP4 or MOV · drag &amp; drop or click to browse</div>
+    <input type="file" id="fileInput" accept=".mp4,.mov,video/mp4,video/quicktime" onchange="handleFile(this.files[0])">
+  </div>
+
+  <!-- File info -->
+  <div class="file-info" id="fileInfo">
+    <div class="file-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polygon points="23 7 16 12 23 17 23 7"/>
+        <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+      </svg>
+    </div>
+    <div class="file-details">
+      <div class="file-name" id="fileName"></div>
+      <div class="file-meta" id="fileMeta"></div>
+    </div>
+    <button class="file-remove" onclick="clearFile()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+      </svg>
+    </button>
+  </div>
+
+  <!-- Compress button -->
+  <button class="compress-btn" id="compressBtn" onclick="startCompression()" disabled>
+    Compress for Discord
+  </button>
+
+  <!-- Progress -->
+  <div class="progress-section" id="progressSection">
+    <div class="progress-header">
+      <span class="progress-status" id="progressStatus">Starting…</span>
+      <span class="progress-pct" id="progressPct">0%</span>
+    </div>
+    <div class="progress-bar-track">
+      <div class="progress-bar-fill" id="progressBar"></div>
+    </div>
+    <div class="progress-log" id="progressLog"></div>
+  </div>
+
+  <!-- Result -->
+  <div class="result-section" id="resultSection">
+    <div class="result-header">
+      <div class="result-badge success" id="resultBadge">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="20 6 9 17 4 12"/>
+        </svg>
+      </div>
+      <div class="result-title" id="resultTitle">Video compressed successfully!</div>
+    </div>
+    <div class="result-stats">
+      <div class="stat-box"><div class="stat-val" id="origSize">—</div><div class="stat-lbl">Original</div></div>
+      <div class="stat-box"><div class="stat-val" id="newSize">—</div><div class="stat-lbl">Compressed</div></div>
+      <div class="stat-box"><div class="stat-val" id="savings">—</div><div class="stat-lbl">Saved</div></div>
+    </div>
+    <a class="download-btn" id="downloadBtn" href="#" download="compressed.mp4">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <polyline points="7 10 12 15 17 10"/>
+        <line x1="12" y1="15" x2="12" y2="3"/>
+      </svg>
+      Download Compressed Video
+    </a>
+    <div class="error-msg" id="errorMsg" style="display:none"></div>
+  </div>
+
+  <!-- How it works -->
+  <div class="how-it-works">
+    <div class="section-label" style="margin-bottom:12px;">How it works</div>
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">01 //</div>
+        <div class="step-text">Pick your Discord tier — Free, Basic Nitro, or Nitro</div>
+      </div>
+      <div class="step">
+        <div class="step-num">02 //</div>
+        <div class="step-text">Drop your MP4 or MOV. FFmpeg runs locally — your video never leaves your device</div>
+      </div>
+      <div class="step">
+        <div class="step-num">03 //</div>
+        <div class="step-text">Download and send. No account, no API key, no cost</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  // 0.11.x API — createFFmpeg / ffmpeg.FS / ffmpeg.run (matches the working example pattern)
+  const { createFFmpeg, fetchFile } = FFmpeg;
+  const ffmpeg = createFFmpeg({
+    log: true,
+    logger: ({ message }) => {
+      // Parse progress from ffmpeg log lines
+      const timeMatch = message.match(/time=(\d+):(\d+):(\d+\.\d+)/);
+      if (timeMatch && totalDuration > 0) {
+        const elapsed = parseInt(timeMatch[1]) * 3600
+                      + parseInt(timeMatch[2]) * 60
+                      + parseFloat(timeMatch[3]);
+        const ratio = Math.min(elapsed / totalDuration, 1);
+        const pct = currentPass === 1
+          ? Math.round(15 + ratio * 35)
+          : Math.round(55 + ratio * 40);
+        setProgress(pct,
+          currentPass === 1 ? 'Pass 1 / 2 — analysing…' : 'Pass 2 / 2 — encoding…',
+          message.trim());
+      }
+      const durMatch = message.match(/Duration:\s*(\d+):(\d+):(\d+\.\d+)/);
+      if (durMatch) {
+        totalDuration = parseInt(durMatch[1]) * 3600
+                      + parseInt(durMatch[2]) * 60
+                      + parseFloat(durMatch[3]);
+      }
+      if (message.trim()) setProgress(null, null, message.trim());
+    }
+  });
+
+  var selectedFile  = null;
+  var targetMB      = 47;
+  var outputUrl     = null;
+  var totalDuration = 0;
+  var currentPass   = 1;
+
+  function selectTier(mb, el) {
+    document.querySelectorAll('.tier-card').forEach(c => c.classList.remove('selected'));
+    el.classList.add('selected');
+    targetMB = mb;
+  }
+
+  function handleDrop(e) {
+    e.preventDefault();
+    document.getElementById('dropzone').classList.remove('drag-over');
+    const f = e.dataTransfer.files[0];
+    if (f) handleFile(f);
+  }
+
+  function handleFile(file) {
+    if (!file) return;
+    const ext = file.name.split('.').pop().toLowerCase();
+    if (!['mp4', 'mov'].includes(ext)) {
+      alert('Please upload an MP4 or MOV file.');
+      return;
+    }
+    selectedFile = file;
+    document.getElementById('fileName').textContent = file.name;
+    document.getElementById('fileMeta').textContent = `${formatBytes(file.size)} · ${ext.toUpperCase()}`;
+    document.getElementById('fileInfo').classList.add('visible');
+    document.getElementById('compressBtn').disabled = false;
+    clearResult();
+  }
+
+  function clearFile() {
+    selectedFile = null;
+    document.getElementById('fileInfo').classList.remove('visible');
+    document.getElementById('fileInput').value = '';
+    document.getElementById('compressBtn').disabled = true;
+    clearResult();
+  }
+
+  function clearResult() {
+    document.getElementById('resultSection').classList.remove('visible');
+    document.getElementById('progressSection').classList.remove('visible');
+    if (outputUrl) { URL.revokeObjectURL(outputUrl); outputUrl = null; }
+  }
+
+  function formatBytes(b) {
+    if (b < 1024 * 1024) return (b / 1024).toFixed(1) + ' KB';
+    return (b / 1024 / 1024).toFixed(2) + ' MB';
+  }
+
+  function setProgress(pct, status, log) {
+    if (pct != null) {
+      document.getElementById('progressBar').style.width = pct + '%';
+      document.getElementById('progressPct').textContent = pct + '%';
+    }
+    if (status) document.getElementById('progressStatus').textContent = status;
+    if (log) {
+      const el = document.getElementById('progressLog');
+      el.innerHTML = '';
+      const span = document.createElement('span');
+      span.textContent = '› ' + log.substring(0, 140);
+      el.appendChild(span);
+    }
+  }
+
+  function getVideoDuration(file) {
+    return new Promise(resolve => {
+      const url = URL.createObjectURL(file);
+      const v = document.createElement('video');
+      v.preload = 'metadata';
+      v.onloadedmetadata = () => { URL.revokeObjectURL(url); resolve(v.duration || 60); };
+      v.onerror = () => { URL.revokeObjectURL(url); resolve(60); };
+      v.src = url;
+    });
+  }
+
+  async function startCompression() {
+    if (!selectedFile) return;
+
+    const origSize    = selectedFile.size;
+    const targetBytes = targetMB * 1024 * 1024 * 0.95; // 5% headroom
+
+    if (origSize <= targetBytes) {
+      showAlreadySmall(origSize);
+      return;
+    }
+
+    document.getElementById('compressBtn').disabled = true;
+    document.getElementById('progressSection').classList.add('visible');
+    document.getElementById('resultSection').classList.remove('visible');
+    document.getElementById('progressLog').innerHTML = '';
+    totalDuration = 0;
+    setProgress(0, 'Loading FFmpeg…', null);
+
+    try {
+      // Load FFmpeg engine (same as working example: ffmpeg.isLoaded())
+      if (!ffmpeg.isLoaded()) {
+        setProgress(3, 'Loading FFmpeg…', 'Downloading engine (~25 MB, one-time)…');
+        await ffmpeg.load();
+      }
+
+      setProgress(8, 'Reading video…', 'Measuring duration…');
+      const duration = await getVideoDuration(selectedFile);
+      totalDuration  = duration;
+
+      // Calculate bitrate to hit target file size
+      // formula: (targetBytes * 8 - audioBitsTotal) / duration = videoBitsPerSec
+      const audioBitrate  = 96000; // 96 kbps
+      const videoBitrate  = Math.max(100000, (targetBytes * 8) / duration - audioBitrate);
+      const videoBitrateK = Math.floor(videoBitrate / 1000);
+
+      setProgress(12, 'Writing file…', `Bitrate: ${videoBitrateK}k · Duration: ${duration.toFixed(1)}s`);
+
+      const ext       = selectedFile.name.split('.').pop().toLowerCase();
+      const inputName = 'input.' + ext;
+
+      // Write to virtual FS — same as working example
+      ffmpeg.FS('writeFile', inputName, await fetchFile(selectedFile));
+
+      // --- Pass 1: analysis ---
+      currentPass = 1;
+      setProgress(15, 'Pass 1 / 2 — analysing…', 'Analysing video…');
+      await ffmpeg.run(
+        '-y',
+        '-i', inputName,
+        '-c:v', 'libx264',
+        '-b:v', videoBitrateK + 'k',
+        '-pass', '1',
+        '-an',
+        '-f', 'null',
+        '/dev/null'
+      );
+
+      // --- Pass 2: encode ---
+      currentPass = 2;
+      setProgress(55, 'Pass 2 / 2 — encoding…', 'Encoding…');
+      await ffmpeg.run(
+        '-y',
+        '-i', inputName,
+        '-c:v', 'libx264',
+        '-b:v', videoBitrateK + 'k',
+        '-pass', '2',
+        '-c:a', 'aac',
+        '-b:a', '96k',
+        '-movflags', '+faststart',
+        'output.mp4'
+      );
+
+      setProgress(97, 'Finalising…', 'Reading output…');
+
+      // Read result — same as working example
+      const data = ffmpeg.FS('readFile', 'output.mp4');
+      const blob = new Blob([data.buffer], { type: 'video/mp4' });
+
+      // Cleanup FS
+      try { ffmpeg.FS('unlink', inputName); } catch(_) {}
+      try { ffmpeg.FS('unlink', 'output.mp4'); } catch(_) {}
+      try { ffmpeg.FS('unlink', 'ffmpeg2pass-0.log'); } catch(_) {}
+      try { ffmpeg.FS('unlink', 'ffmpeg2pass-0.log.mbtree'); } catch(_) {}
+
+      setProgress(100, 'Done!', 'Compression complete!');
+
+      outputUrl = URL.createObjectURL(blob);
+      const dlBtn = document.getElementById('downloadBtn');
+      dlBtn.href     = outputUrl;
+      dlBtn.download = selectedFile.name.replace(/\.[^.]+$/, '_compressed.mp4');
+
+      showResult(origSize, blob.size);
+
+    } catch (err) {
+      console.error(err);
+      showError(err.message || String(err));
+    } finally {
+      document.getElementById('compressBtn').disabled = false;
+    }
+  }
+
+  function showResult(origBytes, newBytes) {
+    const pct = Math.round((1 - newBytes / origBytes) * 100);
+    document.getElementById('origSize').textContent = formatBytes(origBytes);
+    document.getElementById('newSize').textContent  = formatBytes(newBytes);
+    document.getElementById('savings').textContent  = pct + '%';
+    const sec = document.getElementById('resultSection');
+    sec.classList.remove('error');
+    document.getElementById('resultBadge').className = 'result-badge success';
+    document.getElementById('resultBadge').innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
+    document.getElementById('resultTitle').textContent = 'Video compressed successfully!';
+    document.getElementById('downloadBtn').style.display = 'flex';
+    document.getElementById('errorMsg').style.display    = 'none';
+    sec.classList.add('visible');
+  }
+
+  function showAlreadySmall(size) {
+    document.getElementById('progressSection').classList.remove('visible');
+    document.getElementById('origSize').textContent = formatBytes(size);
+    document.getElementById('newSize').textContent  = formatBytes(size);
+    document.getElementById('savings').textContent  = '0%';
+    const sec = document.getElementById('resultSection');
+    sec.classList.remove('error');
+    document.getElementById('resultBadge').className = 'result-badge success';
+    document.getElementById('resultBadge').innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
+    document.getElementById('resultTitle').textContent = `Already fits your tier! (${formatBytes(size)})`;
+    document.getElementById('downloadBtn').style.display = 'none';
+    document.getElementById('errorMsg').style.display    = 'none';
+    sec.classList.add('visible');
+    document.getElementById('compressBtn').disabled = false;
+  }
+
+  function showError(msg) {
+    const sec = document.getElementById('resultSection');
+    sec.classList.add('error');
+    document.getElementById('resultBadge').className = 'result-badge error';
+    document.getElementById('resultBadge').innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+    document.getElementById('resultTitle').textContent   = 'Compression failed';
+    document.getElementById('downloadBtn').style.display = 'none';
+    document.getElementById('errorMsg').style.display    = 'block';
+    document.getElementById('errorMsg').textContent      = msg;
+    sec.classList.add('visible');
+  }
+</script>
+</body>
+</html>
