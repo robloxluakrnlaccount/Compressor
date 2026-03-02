@@ -552,7 +552,8 @@
   import { FFmpeg } from 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js';
   import { fetchFile, toBlobURL } from 'https://unpkg.com/@ffmpeg/util@0.12.1/dist/esm/index.js';
 
-  const BASE = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
+  const BASE   = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
+  const FF_ESM = 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm';
 
   const ffmpeg = new FFmpeg();
 
@@ -688,8 +689,9 @@
       if (!ffmpegLoaded) {
         setProgress(3, 'Loading FFmpeg…', 'Downloading engine (~30 MB, one-time)…');
         await ffmpeg.load({
-          coreURL:   await toBlobURL(`${BASE}/ffmpeg-core.js`,   'text/javascript'),
-          wasmURL:   await toBlobURL(`${BASE}/ffmpeg-core.wasm`, 'application/wasm'),
+          coreURL:   await toBlobURL(`${BASE}/ffmpeg-core.js`,     'text/javascript'),
+          wasmURL:   await toBlobURL(`${BASE}/ffmpeg-core.wasm`,   'application/wasm'),
+          workerURL: await toBlobURL(`${FF_ESM}/worker.js`,        'text/javascript'),
         });
         ffmpegLoaded = true;
       }
