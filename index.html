@@ -680,21 +680,29 @@
       const duration = await getVideoDuration(selectedFile);
       totalDuration  = duration;
 
-      setProgress(12, 'Writing file…', `Duration: ${duration.toFixed(1)}s · writing to WASM FS…`);
+      setProgress(12, 'Calculating bitrate…', `Duration: ${duration.toFixed(1)}s`);
 
       const ext       = selectedFile.name.split('.').pop().toLowerCase();
       const inputName = 'input.' + ext;
 
       ffmpeg.FS('writeFile', inputName, await fetchFile(selectedFile));
 
-      // Split filters into separate -vf args to avoid escaping issues in ffmpeg.wasm.
-      // scale=-2:720 = scale to 720p height, keeping aspect ratio (width auto, must be even).
-      // fps=30 = cap framerate. Both are safe simple strings with no special chars.
-      setProgress(15, 'Encoding…', 'Single-pass CRF · fps cap 30 · scale to 720p');
+      // Target bitrate to hit the file size limit.
+      // Formula: (targetBytes * 8) / duration = total bits/sec, minus audio.
+      const audioBps  = 96000;
+      const videoBps  = Math.max(50000, Math.floor((targetBytes * 8) / duration) - audioBps);
+      const videoBitrateK = Math.floor(videoBps / 1000);
+      // Set maxrate and bufsize to enforce the ceiling tightly (prevents overshooting)
+      const maxrateK  = Math.floor(videoBitrateK * 1.25);
+      const bufsizeK  = Math.floor(videoBitrateK * 2);
+
+      setProgress(15, 'Encoding…', `Target: ${videoBitrateK}k video · scale to 720p · 30fps`);
       await ffmpeg.run(
         '-y', '-i', inputName,
         '-c:v', 'libx264',
-        '-crf', '28',
+        '-b:v', `${videoBitrateK}k`,
+        '-maxrate', `${maxrateK}k`,
+        '-bufsize', `${bufsizeK}k`,
         '-preset', 'ultrafast',
         '-vf', 'scale=-2:720,fps=30',
         '-c:a', 'aac', '-b:a', '96k',
