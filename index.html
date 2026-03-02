@@ -5,48 +5,41 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Discord Video Compressor — Send videos to your friends without going through limits</title>
 <script>
-  // Inline coi-serviceworker — works on GitHub Pages without needing server headers.
-  // Registers a SW that injects COOP/COEP headers, then reloads once.
+  // Register coi-sw.js (must be deployed in the same folder as index.html).
+  // It injects COOP/COEP headers so SharedArrayBuffer works on GitHub Pages.
   (() => {
-    if (typeof SharedArrayBuffer !== 'undefined') return; // already have it, nothing to do
-    if ('serviceWorker' in navigator) {
-      const reloaded = sessionStorage.getItem('coi-reloaded');
-      if (!reloaded) {
-        const swCode = `
-self.addEventListener('install', () => self.skipWaiting());
-self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
-self.addEventListener('fetch', e => {
-  if (e.request.cache === 'only-if-cached' && e.request.mode !== 'same-origin') return;
-  e.respondWith(
-    fetch(e.request).then(r => {
-      if (!r || r.status !== 200 || r.type !== 'basic') return r;
-      const headers = new Headers(r.headers);
-      headers.set('Cross-Origin-Opener-Policy', 'same-origin');
-      headers.set('Cross-Origin-Embedder-Policy', 'require-corp');
-      return new Response(r.body, { status: r.status, statusText: r.statusText, headers });
-    })
-  );
-});`;
-        const blob = new Blob([swCode], { type: 'application/javascript' });
-        const swUrl = URL.createObjectURL(blob);
-        navigator.serviceWorker.register(swUrl, { scope: './' }).then(reg => {
-          reg.addEventListener('updatefound', () => {
-            const sw = reg.installing;
+    if (!('serviceWorker' in navigator)) return;
+
+    const RELOAD_KEY = 'coi-reloaded';
+
+    navigator.serviceWorker.register('./coi-sw.js', { scope: './' })
+      .then(reg => {
+        // SW already controlling this page — check if SAB is available
+        if (navigator.serviceWorker.controller) {
+          // SAB available: great, nothing to do
+          if (typeof SharedArrayBuffer !== 'undefined') return;
+          // SAB still missing even with SW active — clear flag and hard reload
+          sessionStorage.removeItem(RELOAD_KEY);
+          location.reload();
+          return;
+        }
+
+        // No controller yet — SW just installed/activated, reload once to get headers
+        if (!sessionStorage.getItem(RELOAD_KEY)) {
+          const activate = (sw) => {
             sw.addEventListener('statechange', () => {
               if (sw.state === 'activated') {
-                sessionStorage.setItem('coi-reloaded', '1');
+                sessionStorage.setItem(RELOAD_KEY, '1');
                 location.reload();
               }
             });
-          });
-          // If SW was already active from a previous visit, just reload once
-          if (reg.active && typeof SharedArrayBuffer === 'undefined') {
-            sessionStorage.setItem('coi-reloaded', '1');
-            location.reload();
-          }
-        }).catch(err => console.warn('SW registration failed:', err));
-      }
-    }
+          };
+          if (reg.installing) activate(reg.installing);
+          else if (reg.waiting) { reg.waiting.postMessage({type:'SKIP_WAITING'}); activate(reg.waiting); }
+          else if (reg.active)  { sessionStorage.setItem(RELOAD_KEY, '1'); location.reload(); }
+        }
+      })
+      .catch(err => console.warn('[coi-sw] Registration failed:', err));
   })();
 </script>
 <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
