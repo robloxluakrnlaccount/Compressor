@@ -548,54 +548,39 @@
 
 </div>
 
-<script type="module">
-  import { FFmpeg } from 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js';
-  import { fetchFile, toBlobURL } from 'https://unpkg.com/@ffmpeg/util@0.12.1/dist/esm/index.js';
+<!-- ffmpeg 0.11 via CDN that sets correct CORS headers -->
+<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
+<script>
+  // Polyfill fetchFile from 0.11 API
+  const { createFFmpeg, fetchFile } = FFmpeg;
 
-  const BASE   = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
-  const FF_ESM = 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm';
-
-  const ffmpeg = new FFmpeg();
+  const ffmpeg = createFFmpeg({
+    log: true,
+    corePath: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js',
+    logger: ({ message }) => {
+      const durMatch = message.match(/Duration:\s*(\d+):(\d+):(\d+\.\d+)/);
+      if (durMatch) {
+        totalDuration = parseInt(durMatch[1]) * 3600
+                      + parseInt(durMatch[2]) * 60
+                      + parseFloat(durMatch[3]);
+      }
+      const timeMatch = message.match(/time=(\d+):(\d+):(\d+\.\d+)/);
+      if (timeMatch && totalDuration > 0) {
+        const elapsed = parseInt(timeMatch[1]) * 3600
+                      + parseInt(timeMatch[2]) * 60
+                      + parseFloat(timeMatch[3]);
+        const ratio = Math.min(elapsed / totalDuration, 1);
+        setProgress(Math.round(20 + ratio * 75), 'Encoding…', message.trim());
+        return;
+      }
+      if (message.trim()) setProgress(null, null, message.trim());
+    }
+  });
 
   let selectedFile  = null;
   let targetMB      = 47;
   let outputUrl     = null;
   let totalDuration = 0;
-  let ffmpegLoaded  = false;
-
-  // Wire up globals the HTML onclick handlers need
-  window.selectTier  = selectTier;
-  window.handleDrop  = handleDrop;
-  window.handleFile  = handleFile;
-  window.clearFile   = clearFile;
-  window.startCompression = startCompression;
-
-  // Progress via ffmpeg.on('log')
-  ffmpeg.on('log', ({ message }) => {
-    const durMatch = message.match(/Duration:\s*(\d+):(\d+):(\d+\.\d+)/);
-    if (durMatch) {
-      totalDuration = parseInt(durMatch[1]) * 3600
-                    + parseInt(durMatch[2]) * 60
-                    + parseFloat(durMatch[3]);
-    }
-    const timeMatch = message.match(/time=(\d+):(\d+):(\d+\.\d+)/);
-    if (timeMatch && totalDuration > 0) {
-      const elapsed = parseInt(timeMatch[1]) * 3600
-                    + parseInt(timeMatch[2]) * 60
-                    + parseFloat(timeMatch[3]);
-      const ratio = Math.min(elapsed / totalDuration, 1);
-      setProgress(Math.round(20 + ratio * 75), 'Encoding…', message.trim());
-      return;
-    }
-    if (message.trim()) setProgress(null, null, message.trim());
-  });
-
-  ffmpeg.on('progress', ({ progress }) => {
-    if (progress >= 0 && progress <= 1) {
-      setProgress(Math.round(20 + progress * 75), null, null);
-    }
-  });
-
   // ── Tier selector ───────────────────────────────────────────────────────────
   function selectTier(mb, el) {
     document.querySelectorAll('.tier-card').forEach(c => c.classList.remove('selected'));
@@ -686,14 +671,9 @@
     setProgress(0, 'Loading FFmpeg…', null);
 
     try {
-      if (!ffmpegLoaded) {
+      if (!ffmpeg.isLoaded()) {
         setProgress(3, 'Loading FFmpeg…', 'Downloading engine (~30 MB, one-time)…');
-        await ffmpeg.load({
-          coreURL:   await toBlobURL(`${BASE}/ffmpeg-core.js`,     'text/javascript'),
-          wasmURL:   await toBlobURL(`${BASE}/ffmpeg-core.wasm`,   'application/wasm'),
-          workerURL: await toBlobURL(`${FF_ESM}/worker.js`,        'text/javascript'),
-        });
-        ffmpegLoaded = true;
+        await ffmpeg.load();
       }
 
       setProgress(8, 'Reading video…', 'Measuring duration…');
@@ -706,7 +686,7 @@
       const inputName = 'input.' + ext;
 
       // ffmpeg 0.12 uses writeFile differently
-      await ffmpeg.writeFile(inputName, await fetchFile(selectedFile));
+      ffmpeg.FS('writeFile', inputName, await fetchFile(selectedFile));
 
       // Build smart filter chain:
       // - cap to 30fps (Discord doesn't need 165fps, and it's the biggest speed win)
@@ -717,7 +697,7 @@
       // Use CRF mode — faster than CBR 2-pass in WASM, still respects target size well
       // CRF 28 = good quality/size balance; preset ultrafast = ~10x faster encode in WASM
       setProgress(15, 'Encoding…', `Single-pass CRF · fps cap 30 · scale ≤1280px wide`);
-      await ffmpeg.exec([
+      await ffmpeg.run(
         '-y', '-i', inputName,
         '-c:v', 'libx264',
         '-crf', '28',
@@ -726,18 +706,16 @@
         '-c:a', 'aac', '-b:a', '96k',
         '-movflags', '+faststart',
         'output.mp4'
-      ]);
+      );
 
       setProgress(97, 'Finalising…', 'Reading output…');
 
-      const data = await ffmpeg.readFile('output.mp4');
+      const data = ffmpeg.FS('readFile', 'output.mp4');
       const blob = new Blob([data.buffer], { type: 'video/mp4' });
 
       // Cleanup
-      try { await ffmpeg.deleteFile(inputName); }          catch(_) {}
-      try { await ffmpeg.deleteFile('output.mp4'); }       catch(_) {}
-      try { await ffmpeg.deleteFile('ffmpeg2pass-0.log'); } catch(_) {}
-      try { await ffmpeg.deleteFile('ffmpeg2pass-0.log.mbtree'); } catch(_) {}
+      try { ffmpeg.FS('unlink', inputName); }          catch(_) {}
+      try { ffmpeg.FS('unlink', 'output.mp4'); }       catch(_) {}
 
       setProgress(100, 'Done!', 'Compression complete!');
 
