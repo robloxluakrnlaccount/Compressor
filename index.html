@@ -685,24 +685,18 @@
       const ext       = selectedFile.name.split('.').pop().toLowerCase();
       const inputName = 'input.' + ext;
 
-      // ffmpeg 0.12 uses writeFile differently
       ffmpeg.FS('writeFile', inputName, await fetchFile(selectedFile));
 
-      // Build smart filter chain:
-      // - cap to 30fps (Discord doesn't need 165fps, and it's the biggest speed win)
-      // - scale down to max 1280px wide if over 720p (massively reduces encode time in WASM)
-      // - CRF-based single pass — much faster than 2-pass in WASM and hits size well enough
-      const vf = 'fps=fps=30,scale=iw*min(1\,1280/iw):ih*min(1\,1280/iw):flags=lanczos';
-
-      // Use CRF mode — faster than CBR 2-pass in WASM, still respects target size well
-      // CRF 28 = good quality/size balance; preset ultrafast = ~10x faster encode in WASM
-      setProgress(15, 'Encoding…', `Single-pass CRF · fps cap 30 · scale ≤1280px wide`);
+      // Split filters into separate -vf args to avoid escaping issues in ffmpeg.wasm.
+      // scale=-2:720 = scale to 720p height, keeping aspect ratio (width auto, must be even).
+      // fps=30 = cap framerate. Both are safe simple strings with no special chars.
+      setProgress(15, 'Encoding…', 'Single-pass CRF · fps cap 30 · scale to 720p');
       await ffmpeg.run(
         '-y', '-i', inputName,
         '-c:v', 'libx264',
         '-crf', '28',
         '-preset', 'ultrafast',
-        '-vf', vf,
+        '-vf', 'scale=-2:720,fps=30',
         '-c:a', 'aac', '-b:a', '96k',
         '-movflags', '+faststart',
         'output.mp4'
