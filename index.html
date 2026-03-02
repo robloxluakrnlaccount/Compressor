@@ -4,45 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Discord Video Compressor — Send videos to your friends without going through limits</title>
-<script>
-  // Register coi-sw.js (must be deployed in the same folder as index.html).
-  // It injects COOP/COEP headers so SharedArrayBuffer works on GitHub Pages.
-  (() => {
-    if (!('serviceWorker' in navigator)) return;
-
-    const RELOAD_KEY = 'coi-reloaded';
-
-    navigator.serviceWorker.register('./coi-sw.js', { scope: './' })
-      .then(reg => {
-        // SW already controlling this page — check if SAB is available
-        if (navigator.serviceWorker.controller) {
-          // SAB available: great, nothing to do
-          if (typeof SharedArrayBuffer !== 'undefined') return;
-          // SAB still missing even with SW active — clear flag and hard reload
-          sessionStorage.removeItem(RELOAD_KEY);
-          location.reload();
-          return;
-        }
-
-        // No controller yet — SW just installed/activated, reload once to get headers
-        if (!sessionStorage.getItem(RELOAD_KEY)) {
-          const activate = (sw) => {
-            sw.addEventListener('statechange', () => {
-              if (sw.state === 'activated') {
-                sessionStorage.setItem(RELOAD_KEY, '1');
-                location.reload();
-              }
-            });
-          };
-          if (reg.installing) activate(reg.installing);
-          else if (reg.waiting) { reg.waiting.postMessage({type:'SKIP_WAITING'}); activate(reg.waiting); }
-          else if (reg.active)  { sessionStorage.setItem(RELOAD_KEY, '1'); location.reload(); }
-        }
-      })
-      .catch(err => console.warn('[coi-sw] Registration failed:', err));
-  })();
-</script>
-<script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
+<!-- ffmpeg 0.12 — no SharedArrayBuffer needed, works on any static host -->
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   :root {
@@ -586,54 +548,70 @@
 
 </div>
 
-<script>
-  // Show a banner if SharedArrayBuffer is still not available after SW attempt
-  if (typeof SharedArrayBuffer === 'undefined') {
-    const banner = document.createElement('div');
-    banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:#ed4245;color:#fff;font-family:monospace;font-size:13px;padding:10px 16px;text-align:center;line-height:1.5;';
-    banner.innerHTML = '⚠️ <b>SharedArrayBuffer unavailable.</b> Try a hard-refresh (Ctrl+Shift+R / Cmd+Shift+R). If this persists, open in Chrome or Edge — Firefox/Safari may block the service worker on GitHub Pages.';
-    document.body.prepend(banner);
-  }
+<script type="module">
+  import { FFmpeg } from 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js';
+  import { fetchFile, toBlobURL } from 'https://unpkg.com/@ffmpeg/util@0.12.1/dist/esm/index.js';
 
-  const { createFFmpeg, fetchFile } = FFmpeg;
-  const ffmpeg = createFFmpeg({
-    log: true,
-    logger: ({ message }) => {
-      const timeMatch = message.match(/time=(\d+):(\d+):(\d+\.\d+)/);
-      if (timeMatch && totalDuration > 0) {
-        const elapsed = parseInt(timeMatch[1]) * 3600
-                      + parseInt(timeMatch[2]) * 60
-                      + parseFloat(timeMatch[3]);
-        const ratio = Math.min(elapsed / totalDuration, 1);
-        const pct = currentPass === 1
-          ? Math.round(15 + ratio * 35)
-          : Math.round(55 + ratio * 40);
-        setProgress(pct,
-          currentPass === 1 ? 'Pass 1 / 2 — analysing…' : 'Pass 2 / 2 — encoding…',
-          message.trim());
-      }
-      const durMatch = message.match(/Duration:\s*(\d+):(\d+):(\d+\.\d+)/);
-      if (durMatch) {
-        totalDuration = parseInt(durMatch[1]) * 3600
-                      + parseInt(durMatch[2]) * 60
-                      + parseFloat(durMatch[3]);
-      }
-      if (message.trim()) setProgress(null, null, message.trim());
+  const BASE = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
+
+  const ffmpeg = new FFmpeg();
+
+  let selectedFile  = null;
+  let targetMB      = 47;
+  let outputUrl     = null;
+  let totalDuration = 0;
+  let currentPass   = 1;
+  let ffmpegLoaded  = false;
+
+  // Wire up globals the HTML onclick handlers need
+  window.selectTier  = selectTier;
+  window.handleDrop  = handleDrop;
+  window.handleFile  = handleFile;
+  window.clearFile   = clearFile;
+  window.startCompression = startCompression;
+
+  // Progress via ffmpeg.on('log')
+  ffmpeg.on('log', ({ message }) => {
+    const durMatch = message.match(/Duration:\s*(\d+):(\d+):(\d+\.\d+)/);
+    if (durMatch) {
+      totalDuration = parseInt(durMatch[1]) * 3600
+                    + parseInt(durMatch[2]) * 60
+                    + parseFloat(durMatch[3]);
+    }
+    const timeMatch = message.match(/time=(\d+):(\d+):(\d+\.\d+)/);
+    if (timeMatch && totalDuration > 0) {
+      const elapsed = parseInt(timeMatch[1]) * 3600
+                    + parseInt(timeMatch[2]) * 60
+                    + parseFloat(timeMatch[3]);
+      const ratio = Math.min(elapsed / totalDuration, 1);
+      const pct = currentPass === 1
+        ? Math.round(15 + ratio * 35)
+        : Math.round(55 + ratio * 40);
+      setProgress(pct,
+        currentPass === 1 ? 'Pass 1 / 2 — analysing…' : 'Pass 2 / 2 — encoding…',
+        message.trim());
+      return;
+    }
+    if (message.trim()) setProgress(null, null, message.trim());
+  });
+
+  ffmpeg.on('progress', ({ progress }) => {
+    if (progress >= 0 && progress <= 1) {
+      const pct = currentPass === 1
+        ? Math.round(15 + progress * 35)
+        : Math.round(55 + progress * 40);
+      setProgress(pct, null, null);
     }
   });
 
-  var selectedFile  = null;
-  var targetMB      = 47;
-  var outputUrl     = null;
-  var totalDuration = 0;
-  var currentPass   = 1;
-
+  // ── Tier selector ───────────────────────────────────────────────────────────
   function selectTier(mb, el) {
     document.querySelectorAll('.tier-card').forEach(c => c.classList.remove('selected'));
     el.classList.add('selected');
     targetMB = mb;
   }
 
+  // ── File handling ────────────────────────────────────────────────────────────
   function handleDrop(e) {
     e.preventDefault();
     document.getElementById('dropzone').classList.remove('drag-over');
@@ -644,10 +622,7 @@
   function handleFile(file) {
     if (!file) return;
     const ext = file.name.split('.').pop().toLowerCase();
-    if (!['mp4', 'mov'].includes(ext)) {
-      alert('Please upload an MP4 or MOV file.');
-      return;
-    }
+    if (!['mp4', 'mov'].includes(ext)) { alert('Please upload an MP4 or MOV file.'); return; }
     selectedFile = file;
     document.getElementById('fileName').textContent = file.name;
     document.getElementById('fileMeta').textContent = `${formatBytes(file.size)} · ${ext.toUpperCase()}`;
@@ -670,6 +645,7 @@
     if (outputUrl) { URL.revokeObjectURL(outputUrl); outputUrl = null; }
   }
 
+  // ── Helpers ──────────────────────────────────────────────────────────────────
   function formatBytes(b) {
     if (b < 1024 * 1024) return (b / 1024).toFixed(1) + ' KB';
     return (b / 1024 / 1024).toFixed(2) + ' MB';
@@ -701,16 +677,14 @@
     });
   }
 
+  // ── Main compression ─────────────────────────────────────────────────────────
   async function startCompression() {
     if (!selectedFile) return;
 
     const origSize    = selectedFile.size;
     const targetBytes = targetMB * 1024 * 1024 * 0.95;
 
-    if (origSize <= targetBytes) {
-      showAlreadySmall(origSize);
-      return;
-    }
+    if (origSize <= targetBytes) { showAlreadySmall(origSize); return; }
 
     document.getElementById('compressBtn').disabled = true;
     document.getElementById('progressSection').classList.add('visible');
@@ -720,9 +694,13 @@
     setProgress(0, 'Loading FFmpeg…', null);
 
     try {
-      if (!ffmpeg.isLoaded()) {
-        setProgress(3, 'Loading FFmpeg…', 'Downloading engine (~25 MB, one-time)…');
-        await ffmpeg.load();
+      if (!ffmpegLoaded) {
+        setProgress(3, 'Loading FFmpeg…', 'Downloading engine (~30 MB, one-time)…');
+        await ffmpeg.load({
+          coreURL:   await toBlobURL(`${BASE}/ffmpeg-core.js`,   'text/javascript'),
+          wasmURL:   await toBlobURL(`${BASE}/ffmpeg-core.wasm`, 'application/wasm'),
+        });
+        ffmpegLoaded = true;
       }
 
       setProgress(8, 'Reading video…', 'Measuring duration…');
@@ -738,44 +716,40 @@
       const ext       = selectedFile.name.split('.').pop().toLowerCase();
       const inputName = 'input.' + ext;
 
-      ffmpeg.FS('writeFile', inputName, await fetchFile(selectedFile));
+      // ffmpeg 0.12 uses writeFile differently
+      await ffmpeg.writeFile(inputName, await fetchFile(selectedFile));
 
+      // Pass 1
       currentPass = 1;
       setProgress(15, 'Pass 1 / 2 — analysing…', 'Analysing video…');
-      await ffmpeg.run(
-        '-y',
-        '-i', inputName,
-        '-c:v', 'libx264',
-        '-b:v', videoBitrateK + 'k',
-        '-pass', '1',
-        '-an',
-        '-f', 'null',
-        '/dev/null'
-      );
+      await ffmpeg.exec([
+        '-y', '-i', inputName,
+        '-c:v', 'libx264', '-b:v', videoBitrateK + 'k',
+        '-pass', '1', '-an', '-f', 'null', '/dev/null'
+      ]);
 
+      // Pass 2
       currentPass = 2;
       setProgress(55, 'Pass 2 / 2 — encoding…', 'Encoding…');
-      await ffmpeg.run(
-        '-y',
-        '-i', inputName,
-        '-c:v', 'libx264',
-        '-b:v', videoBitrateK + 'k',
+      await ffmpeg.exec([
+        '-y', '-i', inputName,
+        '-c:v', 'libx264', '-b:v', videoBitrateK + 'k',
         '-pass', '2',
-        '-c:a', 'aac',
-        '-b:a', '96k',
+        '-c:a', 'aac', '-b:a', '96k',
         '-movflags', '+faststart',
         'output.mp4'
-      );
+      ]);
 
       setProgress(97, 'Finalising…', 'Reading output…');
 
-      const data = ffmpeg.FS('readFile', 'output.mp4');
+      const data = await ffmpeg.readFile('output.mp4');
       const blob = new Blob([data.buffer], { type: 'video/mp4' });
 
-      try { ffmpeg.FS('unlink', inputName); } catch(_) {}
-      try { ffmpeg.FS('unlink', 'output.mp4'); } catch(_) {}
-      try { ffmpeg.FS('unlink', 'ffmpeg2pass-0.log'); } catch(_) {}
-      try { ffmpeg.FS('unlink', 'ffmpeg2pass-0.log.mbtree'); } catch(_) {}
+      // Cleanup
+      try { await ffmpeg.deleteFile(inputName); }          catch(_) {}
+      try { await ffmpeg.deleteFile('output.mp4'); }       catch(_) {}
+      try { await ffmpeg.deleteFile('ffmpeg2pass-0.log'); } catch(_) {}
+      try { await ffmpeg.deleteFile('ffmpeg2pass-0.log.mbtree'); } catch(_) {}
 
       setProgress(100, 'Done!', 'Compression complete!');
 
@@ -794,6 +768,7 @@
     }
   }
 
+  // ── Result UI ────────────────────────────────────────────────────────────────
   function showResult(origBytes, newBytes) {
     const pct = Math.round((1 - newBytes / origBytes) * 100);
     document.getElementById('origSize').textContent = formatBytes(origBytes);
