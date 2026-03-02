@@ -1,7 +1,8 @@
 <!DOCTYPE html>
 <html lang="en">
-<head> 
-<script src="https://cdn.jsdelivr.net" data-coi-scope="./"></script>
+<head>
+<!-- ✅ FIX: correct coi-serviceworker URL — injects COOP/COEP headers on GitHub Pages -->
+<script src="https://cdn.jsdelivr.net/npm/coi-serviceworker@0.1.7/coi-serviceworker.min.js"></script>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Discord Video Compressor — Send videos to your friends without going through limits</title>
@@ -550,12 +551,10 @@
 </div>
 
 <script>
-  // 0.11.x API — createFFmpeg / ffmpeg.FS / ffmpeg.run (matches the working example pattern)
   const { createFFmpeg, fetchFile } = FFmpeg;
   const ffmpeg = createFFmpeg({
     log: true,
     logger: ({ message }) => {
-      // Parse progress from ffmpeg log lines
       const timeMatch = message.match(/time=(\d+):(\d+):(\d+\.\d+)/);
       if (timeMatch && totalDuration > 0) {
         const elapsed = parseInt(timeMatch[1]) * 3600
@@ -662,7 +661,7 @@
     if (!selectedFile) return;
 
     const origSize    = selectedFile.size;
-    const targetBytes = targetMB * 1024 * 1024 * 0.95; // 5% headroom
+    const targetBytes = targetMB * 1024 * 1024 * 0.95;
 
     if (origSize <= targetBytes) {
       showAlreadySmall(origSize);
@@ -677,7 +676,6 @@
     setProgress(0, 'Loading FFmpeg…', null);
 
     try {
-      // Load FFmpeg engine (same as working example: ffmpeg.isLoaded())
       if (!ffmpeg.isLoaded()) {
         setProgress(3, 'Loading FFmpeg…', 'Downloading engine (~25 MB, one-time)…');
         await ffmpeg.load();
@@ -687,9 +685,7 @@
       const duration = await getVideoDuration(selectedFile);
       totalDuration  = duration;
 
-      // Calculate bitrate to hit target file size
-      // formula: (targetBytes * 8 - audioBitsTotal) / duration = videoBitsPerSec
-      const audioBitrate  = 96000; // 96 kbps
+      const audioBitrate  = 96000;
       const videoBitrate  = Math.max(100000, (targetBytes * 8) / duration - audioBitrate);
       const videoBitrateK = Math.floor(videoBitrate / 1000);
 
@@ -698,10 +694,8 @@
       const ext       = selectedFile.name.split('.').pop().toLowerCase();
       const inputName = 'input.' + ext;
 
-      // Write to virtual FS — same as working example
       ffmpeg.FS('writeFile', inputName, await fetchFile(selectedFile));
 
-      // --- Pass 1: analysis ---
       currentPass = 1;
       setProgress(15, 'Pass 1 / 2 — analysing…', 'Analysing video…');
       await ffmpeg.run(
@@ -715,7 +709,6 @@
         '/dev/null'
       );
 
-      // --- Pass 2: encode ---
       currentPass = 2;
       setProgress(55, 'Pass 2 / 2 — encoding…', 'Encoding…');
       await ffmpeg.run(
@@ -732,11 +725,9 @@
 
       setProgress(97, 'Finalising…', 'Reading output…');
 
-      // Read result — same as working example
       const data = ffmpeg.FS('readFile', 'output.mp4');
       const blob = new Blob([data.buffer], { type: 'video/mp4' });
 
-      // Cleanup FS
       try { ffmpeg.FS('unlink', inputName); } catch(_) {}
       try { ffmpeg.FS('unlink', 'output.mp4'); } catch(_) {}
       try { ffmpeg.FS('unlink', 'ffmpeg2pass-0.log'); } catch(_) {}
