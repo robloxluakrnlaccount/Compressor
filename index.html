@@ -1,11 +1,54 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<!-- ✅ FIX: correct coi-serviceworker URL — injects COOP/COEP headers on GitHub Pages -->
-<script src="https://cdn.jsdelivr.net/npm/coi-serviceworker@0.1.7/coi-serviceworker.min.js"></script>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Discord Video Compressor — Send videos to your friends without going through limits</title>
+<script>
+  // Inline coi-serviceworker — works on GitHub Pages without needing server headers.
+  // Registers a SW that injects COOP/COEP headers, then reloads once.
+  (() => {
+    if (typeof SharedArrayBuffer !== 'undefined') return; // already have it, nothing to do
+    if ('serviceWorker' in navigator) {
+      const reloaded = sessionStorage.getItem('coi-reloaded');
+      if (!reloaded) {
+        const swCode = `
+self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', e => {
+  if (e.request.cache === 'only-if-cached' && e.request.mode !== 'same-origin') return;
+  e.respondWith(
+    fetch(e.request).then(r => {
+      if (!r || r.status !== 200 || r.type !== 'basic') return r;
+      const headers = new Headers(r.headers);
+      headers.set('Cross-Origin-Opener-Policy', 'same-origin');
+      headers.set('Cross-Origin-Embedder-Policy', 'require-corp');
+      return new Response(r.body, { status: r.status, statusText: r.statusText, headers });
+    })
+  );
+});`;
+        const blob = new Blob([swCode], { type: 'application/javascript' });
+        const swUrl = URL.createObjectURL(blob);
+        navigator.serviceWorker.register(swUrl, { scope: './' }).then(reg => {
+          reg.addEventListener('updatefound', () => {
+            const sw = reg.installing;
+            sw.addEventListener('statechange', () => {
+              if (sw.state === 'activated') {
+                sessionStorage.setItem('coi-reloaded', '1');
+                location.reload();
+              }
+            });
+          });
+          // If SW was already active from a previous visit, just reload once
+          if (reg.active && typeof SharedArrayBuffer === 'undefined') {
+            sessionStorage.setItem('coi-reloaded', '1');
+            location.reload();
+          }
+        }).catch(err => console.warn('SW registration failed:', err));
+      }
+    }
+  })();
+</script>
 <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
@@ -551,6 +594,14 @@
 </div>
 
 <script>
+  // Show a banner if SharedArrayBuffer is still not available after SW attempt
+  if (typeof SharedArrayBuffer === 'undefined') {
+    const banner = document.createElement('div');
+    banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:#ed4245;color:#fff;font-family:monospace;font-size:13px;padding:10px 16px;text-align:center;line-height:1.5;';
+    banner.innerHTML = '⚠️ <b>SharedArrayBuffer unavailable.</b> Try a hard-refresh (Ctrl+Shift+R / Cmd+Shift+R). If this persists, open in Chrome or Edge — Firefox/Safari may block the service worker on GitHub Pages.';
+    document.body.prepend(banner);
+  }
+
   const { createFFmpeg, fetchFile } = FFmpeg;
   const ffmpeg = createFFmpeg({
     log: true,
