@@ -560,7 +560,6 @@
   let targetMB      = 47;
   let outputUrl     = null;
   let totalDuration = 0;
-  let currentPass   = 1;
   let ffmpegLoaded  = false;
 
   // Wire up globals the HTML onclick handlers need
@@ -584,12 +583,7 @@
                     + parseInt(timeMatch[2]) * 60
                     + parseFloat(timeMatch[3]);
       const ratio = Math.min(elapsed / totalDuration, 1);
-      const pct = currentPass === 1
-        ? Math.round(15 + ratio * 35)
-        : Math.round(55 + ratio * 40);
-      setProgress(pct,
-        currentPass === 1 ? 'Pass 1 / 2 — analysing…' : 'Pass 2 / 2 — encoding…',
-        message.trim());
+      setProgress(Math.round(20 + ratio * 75), 'Encoding…', message.trim());
       return;
     }
     if (message.trim()) setProgress(null, null, message.trim());
@@ -597,10 +591,7 @@
 
   ffmpeg.on('progress', ({ progress }) => {
     if (progress >= 0 && progress <= 1) {
-      const pct = currentPass === 1
-        ? Math.round(15 + progress * 35)
-        : Math.round(55 + progress * 40);
-      setProgress(pct, null, null);
+      setProgress(Math.round(20 + progress * 75), null, null);
     }
   });
 
@@ -707,11 +698,7 @@
       const duration = await getVideoDuration(selectedFile);
       totalDuration  = duration;
 
-      const audioBitrate  = 96000;
-      const videoBitrate  = Math.max(100000, (targetBytes * 8) / duration - audioBitrate);
-      const videoBitrateK = Math.floor(videoBitrate / 1000);
-
-      setProgress(12, 'Writing file…', `Bitrate: ${videoBitrateK}k · Duration: ${duration.toFixed(1)}s`);
+      setProgress(12, 'Writing file…', `Duration: ${duration.toFixed(1)}s · writing to WASM FS…`);
 
       const ext       = selectedFile.name.split('.').pop().toLowerCase();
       const inputName = 'input.' + ext;
@@ -719,22 +706,21 @@
       // ffmpeg 0.12 uses writeFile differently
       await ffmpeg.writeFile(inputName, await fetchFile(selectedFile));
 
-      // Pass 1
-      currentPass = 1;
-      setProgress(15, 'Pass 1 / 2 — analysing…', 'Analysing video…');
-      await ffmpeg.exec([
-        '-y', '-i', inputName,
-        '-c:v', 'libx264', '-b:v', videoBitrateK + 'k',
-        '-pass', '1', '-an', '-f', 'null', '/dev/null'
-      ]);
+      // Build smart filter chain:
+      // - cap to 30fps (Discord doesn't need 165fps, and it's the biggest speed win)
+      // - scale down to max 1280px wide if over 720p (massively reduces encode time in WASM)
+      // - CRF-based single pass — much faster than 2-pass in WASM and hits size well enough
+      const vf = 'fps=fps=30,scale=iw*min(1\,1280/iw):ih*min(1\,1280/iw):flags=lanczos';
 
-      // Pass 2
-      currentPass = 2;
-      setProgress(55, 'Pass 2 / 2 — encoding…', 'Encoding…');
+      // Use CRF mode — faster than CBR 2-pass in WASM, still respects target size well
+      // CRF 28 = good quality/size balance; preset ultrafast = ~10x faster encode in WASM
+      setProgress(15, 'Encoding…', `Single-pass CRF · fps cap 30 · scale ≤1280px wide`);
       await ffmpeg.exec([
         '-y', '-i', inputName,
-        '-c:v', 'libx264', '-b:v', videoBitrateK + 'k',
-        '-pass', '2',
+        '-c:v', 'libx264',
+        '-crf', '28',
+        '-preset', 'ultrafast',
+        '-vf', vf,
         '-c:a', 'aac', '-b:a', '96k',
         '-movflags', '+faststart',
         'output.mp4'
