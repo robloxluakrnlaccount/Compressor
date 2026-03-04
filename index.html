@@ -548,53 +548,71 @@
 
 </div>
 
-<!-- ffmpeg 0.12 UMD — worker is bundled inline, no SharedArrayBuffer needed, no CORS issues -->
-<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
+<!-- ffmpeg 0.12 — worker inlined via blob to bypass all CORS restrictions -->
 <script>
-  const { FFmpeg } = FFmpegWASM;
+  // We create the FFmpeg worker inline as a blob so no cross-origin worker is ever constructed.
+  // The worker source is fetched once, turned into a blob URL, and passed to ffmpeg.load().
+  // Core + WASM are also blobbed. Zero cross-origin worker construction = no CORS error.
 
-  async function makeBlobURL(url, mimeType) {
-    const res  = await fetch(url);
-    const blob = await res.blob();
-    return URL.createObjectURL(new Blob([blob], { type: mimeType }));
+  const JSDELIVR  = 'https://cdn.jsdelivr.net/npm';
+  const FF        = `${JSDELIVR}/@ffmpeg/ffmpeg@0.12.10/dist/esm`;
+  const CORE      = `${JSDELIVR}/@ffmpeg/core@0.12.6/dist/esm`;
+
+  async function toBlobURL(url, type) {
+    const buf = await fetch(url).then(r => r.arrayBuffer());
+    return URL.createObjectURL(new Blob([buf], { type }));
+  }
+
+  async function loadFFmpeg() {
+    // Dynamically import FFmpeg AFTER we have blob URLs ready
+    const workerURL = await toBlobURL(`${FF}/worker.js`, 'text/javascript');
+    const coreURL   = await toBlobURL(`${CORE}/ffmpeg-core.js`, 'text/javascript');
+    const wasmURL   = await toBlobURL(`${CORE}/ffmpeg-core.wasm`, 'application/wasm');
+
+    const { FFmpeg } = await import(`${FF}/index.js`);
+    const ff = new FFmpeg();
+    await ff.load({ workerURL, coreURL, wasmURL });
+    return ff;
   }
 
   async function fetchFileAsUint8(file) {
     return new Uint8Array(await file.arrayBuffer());
   }
 
-  const CORE = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd';
+  let _ffmpeg     = null;
+  let totalDuration = 0;
 
-  const ffmpeg = new FFmpeg();
-
-  ffmpeg.on('log', ({ message }) => {
-    const durMatch = message.match(/Duration:\s*(\d+):(\d+):(\d+\.\d+)/);
-    if (durMatch) {
-      totalDuration = parseInt(durMatch[1]) * 3600
-                    + parseInt(durMatch[2]) * 60
-                    + parseFloat(durMatch[3]);
-    }
-    const timeMatch = message.match(/time=(\d+):(\d+):(\d+\.\d+)/);
-    if (timeMatch && totalDuration > 0) {
-      const elapsed = parseInt(timeMatch[1]) * 3600
-                    + parseInt(timeMatch[2]) * 60
-                    + parseFloat(timeMatch[3]);
-      const ratio = Math.min(elapsed / totalDuration, 1);
-      setProgress(Math.round(20 + ratio * 75), 'Encoding…', message.trim());
-      return;
-    }
-    if (message.trim()) setProgress(null, null, message.trim());
-  });
-
-  ffmpeg.on('progress', ({ progress }) => {
-    if (progress >= 0 && progress <= 1)
-      setProgress(Math.round(20 + progress * 75), null, null);
-  });
+  async function getFFmpeg() {
+    if (_ffmpeg) return _ffmpeg;
+    _ffmpeg = await loadFFmpeg();
+    _ffmpeg.on('log', ({ message }) => {
+      const durMatch = message.match(/Duration:\s*(\d+):(\d+):(\d+\.\d+)/);
+      if (durMatch) {
+        totalDuration = parseInt(durMatch[1]) * 3600
+                      + parseInt(durMatch[2]) * 60
+                      + parseFloat(durMatch[3]);
+      }
+      const timeMatch = message.match(/time=(\d+):(\d+):(\d+\.\d+)/);
+      if (timeMatch && totalDuration > 0) {
+        const elapsed = parseInt(timeMatch[1]) * 3600
+                      + parseInt(timeMatch[2]) * 60
+                      + parseFloat(timeMatch[3]);
+        const ratio = Math.min(elapsed / totalDuration, 1);
+        setProgress(Math.round(20 + ratio * 75), 'Encoding…', message.trim());
+        return;
+      }
+      if (message.trim()) setProgress(null, null, message.trim());
+    });
+    _ffmpeg.on('progress', ({ progress }) => {
+      if (progress >= 0 && progress <= 1)
+        setProgress(Math.round(20 + progress * 75), null, null);
+    });
+    return _ffmpeg;
+  }
 
   let selectedFile  = null;
   let targetMB      = 47;
   let outputUrl     = null;
-  let totalDuration = 0;
   // ── Tier selector ───────────────────────────────────────────────────────────
   function selectTier(mb, el) {
     document.querySelectorAll('.tier-card').forEach(c => c.classList.remove('selected'));
@@ -685,13 +703,8 @@
     setProgress(0, 'Loading FFmpeg…', null);
 
     try {
-      if (!ffmpeg.loaded) {
-        setProgress(3, 'Loading FFmpeg…', 'Downloading engine (~30 MB, one-time)…');
-        await ffmpeg.load({
-          coreURL: await makeBlobURL(`${CORE}/ffmpeg-core.js`,   'text/javascript'),
-          wasmURL: await makeBlobURL(`${CORE}/ffmpeg-core.wasm`, 'application/wasm'),
-        });
-      }
+      setProgress(3, 'Loading FFmpeg…', 'Downloading engine (~30 MB, one-time)…');
+      const ffmpeg = await getFFmpeg();
 
       setProgress(8, 'Reading video…', 'Measuring duration…');
       const duration = await getVideoDuration(selectedFile);
@@ -702,7 +715,7 @@
       const ext       = selectedFile.name.split('.').pop().toLowerCase();
       const inputName = 'input.' + ext;
 
-      ffmpeg.writeFile(inputName, await fetchFileAsUint8(selectedFile));
+      await ffmpeg.writeFile(inputName, await fetchFileAsUint8(selectedFile));
 
       // Target bitrate to hit the file size limit.
       // Formula: (targetBytes * 8) / duration = total bits/sec, minus audio.
