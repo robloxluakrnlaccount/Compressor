@@ -548,11 +548,11 @@
 
 </div>
 
-<!-- ffmpeg 0.12: UMD global loaded via script tag, all assets blobbed from jsDelivr -->
-<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
+<!-- ffmpeg 0.12: fetch+patch UMD source to replace hardcoded worker URL with a blob -->
 <script>
   const JSD  = 'https://cdn.jsdelivr.net/npm';
   const CORE = `${JSD}/@ffmpeg/core@0.12.6/dist/umd`;
+  const FF   = `${JSD}/@ffmpeg/ffmpeg@0.12.10/dist/umd`;
 
   async function toBlobURL(url, type) {
     const buf = await fetch(url).then(r => r.arrayBuffer());
@@ -560,14 +560,29 @@
   }
 
   async function loadFFmpeg() {
+    // 1. Fetch the worker chunk and turn it into a blob URL
+    const workerBlob = await toBlobURL(`${FF}/814.ffmpeg.js`, 'text/javascript');
+
+    // 2. Fetch the main UMD bundle source as text so we can patch it
+    let src = await fetch(`${FF}/ffmpeg.js`).then(r => r.text());
+
+    // 3. Replace the hardcoded worker chunk URL with our blob URL.
+    //    The UMD bundle references the chunk as either:
+    //      new Worker(new URL("814.ffmpeg.js", ...))  or
+    //      new URL("814.ffmpeg.js", ...)
+    //    We replace every occurrence of "814.ffmpeg.js" with our blob URL.
+    src = src.replaceAll('"814.ffmpeg.js"', JSON.stringify(workerBlob));
+
+    // 4. Execute the patched source — it defines window.FFmpegWASM
+    const blob = new Blob([src], { type: 'text/javascript' });
+    const blobURL = URL.createObjectURL(blob);
+    await import(blobURL);
+
     const { FFmpeg } = FFmpegWASM;
     const ff = new FFmpeg();
     await ff.load({
-      // jsDelivr sets correct CORS headers so fetch() works fine.
-      // Blobbing the worker means new Worker(blobURL) is always same-origin — no CORS block.
-      workerURL: await toBlobURL(`${JSD}/@ffmpeg/ffmpeg@0.12.10/dist/umd/814.ffmpeg.js`, 'text/javascript'),
-      coreURL:   await toBlobURL(`${CORE}/ffmpeg-core.js`,   'text/javascript'),
-      wasmURL:   await toBlobURL(`${CORE}/ffmpeg-core.wasm`, 'application/wasm'),
+      coreURL: await toBlobURL(`${CORE}/ffmpeg-core.js`,   'text/javascript'),
+      wasmURL: await toBlobURL(`${CORE}/ffmpeg-core.wasm`, 'application/wasm'),
     });
     return ff;
   }
