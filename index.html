@@ -4,7 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Discord Video Compressor — Send videos to your friends without going through limits</title>
-<!-- ffmpeg 0.12 — no SharedArrayBuffer needed, works on any static host -->
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   :root {
@@ -548,117 +547,85 @@
 
 </div>
 
-<!-- ffmpeg 0.12: fetch+patch UMD source to replace hardcoded worker URL with a blob -->
-<script>
-  const JSD  = 'https://cdn.jsdelivr.net/npm';
-  const CORE = `${JSD}/@ffmpeg/core@0.12.6/dist/umd`;
-  const FF   = `${JSD}/@ffmpeg/ffmpeg@0.12.10/dist/umd`;
+<!-- ffmpeg 0.12 via jsDelivr — no SharedArrayBuffer needed -->
+<!-- jsDelivr sets Access-Control-Allow-Origin: * so fetch() works, then we blob everything -->
+<script type="module">
+  import { FFmpeg } from 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js';
+  import { fetchFile } from 'https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/esm/index.js';
 
-  async function toBlobURL(url, type) {
-    const buf = await fetch(url).then(r => r.arrayBuffer());
-    return URL.createObjectURL(new Blob([buf], { type }));
+  const CDN  = 'https://cdn.jsdelivr.net/npm';
+  const CORE = `${CDN}/@ffmpeg/core@0.12.6/dist/esm`;
+  const FF   = `${CDN}/@ffmpeg/ffmpeg@0.12.10/dist/esm`;
+
+  async function blob(url, type) {
+    const r = await fetch(url);
+    return URL.createObjectURL(new Blob([await r.arrayBuffer()], { type }));
   }
 
-  async function loadFFmpeg() {
-    // 1. Fetch the worker chunk and turn it into a blob URL
-    const workerBlob = await toBlobURL(`${FF}/814.ffmpeg.js`, 'text/javascript');
-
-    // 2. Fetch the main UMD bundle source as text so we can patch it
-    let src = await fetch(`${FF}/ffmpeg.js`).then(r => r.text());
-
-    // 3. Replace the hardcoded worker chunk URL with our blob URL.
-    //    The UMD bundle references the chunk as either:
-    //      new Worker(new URL("814.ffmpeg.js", ...))  or
-    //      new URL("814.ffmpeg.js", ...)
-    //    We replace every occurrence of "814.ffmpeg.js" with our blob URL.
-    src = src.replaceAll('"814.ffmpeg.js"', JSON.stringify(workerBlob));
-
-    // 4. Execute the patched source — it defines window.FFmpegWASM
-    const blob = new Blob([src], { type: 'text/javascript' });
-    const blobURL = URL.createObjectURL(blob);
-    await import(blobURL);
-
-    const { FFmpeg } = FFmpegWASM;
-    const ff = new FFmpeg();
-    await ff.load({
-      coreURL: await toBlobURL(`${CORE}/ffmpeg-core.js`,   'text/javascript'),
-      wasmURL: await toBlobURL(`${CORE}/ffmpeg-core.wasm`, 'application/wasm'),
-    });
-    return ff;
-  }
-
-  async function fetchFileAsUint8(file) {
-    return new Uint8Array(await file.arrayBuffer());
-  }
-
-  let _ffmpeg     = null;
+  let _ff          = null;
   let totalDuration = 0;
 
-  async function getFFmpeg() {
-    if (_ffmpeg) return _ffmpeg;
-    _ffmpeg = await loadFFmpeg();
-    _ffmpeg.on('log', ({ message }) => {
-      const durMatch = message.match(/Duration:\s*(\d+):(\d+):(\d+\.\d+)/);
-      if (durMatch) {
-        totalDuration = parseInt(durMatch[1]) * 3600
-                      + parseInt(durMatch[2]) * 60
-                      + parseFloat(durMatch[3]);
-      }
-      const timeMatch = message.match(/time=(\d+):(\d+):(\d+\.\d+)/);
-      if (timeMatch && totalDuration > 0) {
-        const elapsed = parseInt(timeMatch[1]) * 3600
-                      + parseInt(timeMatch[2]) * 60
-                      + parseFloat(timeMatch[3]);
-        const ratio = Math.min(elapsed / totalDuration, 1);
+  async function getFF() {
+    if (_ff) return _ff;
+    const ff = new FFmpeg();
+    // Blob all three assets — once blobbed they're same-origin, no CORS on Worker construction
+    await ff.load({
+      workerURL: await blob(`${FF}/worker.js`,        'text/javascript'),
+      coreURL:   await blob(`${CORE}/ffmpeg-core.js`, 'text/javascript'),
+      wasmURL:   await blob(`${CORE}/ffmpeg-core.wasm`, 'application/wasm'),
+    });
+    ff.on('log', ({ message }) => {
+      const d = message.match(/Duration:\s*(\d+):(\d+):(\d+\.\d+)/);
+      if (d) totalDuration = +d[1]*3600 + +d[2]*60 + parseFloat(d[3]);
+      const t = message.match(/time=(\d+):(\d+):(\d+\.\d+)/);
+      if (t && totalDuration > 0) {
+        const ratio = Math.min((+t[1]*3600 + +t[2]*60 + parseFloat(t[3])) / totalDuration, 1);
         setProgress(Math.round(20 + ratio * 75), 'Encoding…', message.trim());
         return;
       }
       if (message.trim()) setProgress(null, null, message.trim());
     });
-    _ffmpeg.on('progress', ({ progress }) => {
+    ff.on('progress', ({ progress }) => {
       if (progress >= 0 && progress <= 1)
         setProgress(Math.round(20 + progress * 75), null, null);
     });
-    return _ffmpeg;
+    _ff = ff;
+    return ff;
   }
 
-  let selectedFile  = null;
-  let targetMB      = 47;
-  let outputUrl     = null;
-  // ── Tier selector ───────────────────────────────────────────────────────────
-  function selectTier(mb, el) {
+  let selectedFile = null;
+  let targetMB     = 47;
+  let outputUrl    = null;
+
+  window.selectTier = (mb, el) => {
     document.querySelectorAll('.tier-card').forEach(c => c.classList.remove('selected'));
     el.classList.add('selected');
     targetMB = mb;
-  }
-
-  // ── File handling ────────────────────────────────────────────────────────────
-  function handleDrop(e) {
+  };
+  window.handleDrop = e => {
     e.preventDefault();
     document.getElementById('dropzone').classList.remove('drag-over');
     const f = e.dataTransfer.files[0];
-    if (f) handleFile(f);
-  }
-
-  function handleFile(file) {
+    if (f) window.handleFile(f);
+  };
+  window.handleFile = file => {
     if (!file) return;
     const ext = file.name.split('.').pop().toLowerCase();
-    if (!['mp4', 'mov'].includes(ext)) { alert('Please upload an MP4 or MOV file.'); return; }
+    if (!['mp4','mov'].includes(ext)) { alert('Please upload an MP4 or MOV file.'); return; }
     selectedFile = file;
     document.getElementById('fileName').textContent = file.name;
-    document.getElementById('fileMeta').textContent = `${formatBytes(file.size)} · ${ext.toUpperCase()}`;
+    document.getElementById('fileMeta').textContent = `${fmtBytes(file.size)} · ${ext.toUpperCase()}`;
     document.getElementById('fileInfo').classList.add('visible');
     document.getElementById('compressBtn').disabled = false;
     clearResult();
-  }
-
-  function clearFile() {
+  };
+  window.clearFile = () => {
     selectedFile = null;
     document.getElementById('fileInfo').classList.remove('visible');
     document.getElementById('fileInput').value = '';
     document.getElementById('compressBtn').disabled = true;
     clearResult();
-  }
+  };
 
   function clearResult() {
     document.getElementById('resultSection').classList.remove('visible');
@@ -666,10 +633,8 @@
     if (outputUrl) { URL.revokeObjectURL(outputUrl); outputUrl = null; }
   }
 
-  // ── Helpers ──────────────────────────────────────────────────────────────────
-  function formatBytes(b) {
-    if (b < 1024 * 1024) return (b / 1024).toFixed(1) + ' KB';
-    return (b / 1024 / 1024).toFixed(2) + ' MB';
+  function fmtBytes(b) {
+    return b < 1048576 ? (b/1024).toFixed(1)+' KB' : (b/1048576).toFixed(2)+' MB';
   }
 
   function setProgress(pct, status, log) {
@@ -681,9 +646,9 @@
     if (log) {
       const el = document.getElementById('progressLog');
       el.innerHTML = '';
-      const span = document.createElement('span');
-      span.textContent = '› ' + log.substring(0, 140);
-      el.appendChild(span);
+      const s = document.createElement('span');
+      s.textContent = '› ' + log.substring(0, 140);
+      el.appendChild(s);
     }
   }
 
@@ -698,13 +663,10 @@
     });
   }
 
-  // ── Main compression ─────────────────────────────────────────────────────────
-  async function startCompression() {
+  window.startCompression = async () => {
     if (!selectedFile) return;
-
     const origSize    = selectedFile.size;
-    const targetBytes = targetMB * 1024 * 1024 * 0.95;
-
+    const targetBytes = targetMB * 1048576 * 0.95;
     if (origSize <= targetBytes) { showAlreadySmall(origSize); return; }
 
     document.getElementById('compressBtn').disabled = true;
@@ -715,31 +677,26 @@
     setProgress(0, 'Loading FFmpeg…', null);
 
     try {
-      setProgress(3, 'Loading FFmpeg…', 'Downloading engine (~30 MB, one-time)…');
-      const ffmpeg = await getFFmpeg();
+      setProgress(3, 'Loading FFmpeg…', 'Downloading engine (∼30 MB, one-time)…');
+      const ff = await getFF();
 
-      setProgress(8, 'Reading video…', 'Measuring duration…');
+      setProgress(10, 'Reading video…', 'Measuring duration…');
       const duration = await getVideoDuration(selectedFile);
-      totalDuration  = duration;
 
-      setProgress(12, 'Calculating bitrate…', `Duration: ${duration.toFixed(1)}s`);
+      const audioBps      = 96000;
+      const videoBps      = Math.max(50000, Math.floor((targetBytes * 8) / duration) - audioBps);
+      const videoBitrateK = Math.floor(videoBps / 1000);
+      const maxrateK      = Math.floor(videoBitrateK * 1.25);
+      const bufsizeK      = Math.floor(videoBitrateK * 2);
 
       const ext       = selectedFile.name.split('.').pop().toLowerCase();
       const inputName = 'input.' + ext;
 
-      await ffmpeg.writeFile(inputName, await fetchFileAsUint8(selectedFile));
+      setProgress(13, 'Writing file…', `${videoBitrateK}k target · ${duration.toFixed(1)}s`);
+      await ff.writeFile(inputName, await fetchFile(selectedFile));
 
-      // Target bitrate to hit the file size limit.
-      // Formula: (targetBytes * 8) / duration = total bits/sec, minus audio.
-      const audioBps  = 96000;
-      const videoBps  = Math.max(50000, Math.floor((targetBytes * 8) / duration) - audioBps);
-      const videoBitrateK = Math.floor(videoBps / 1000);
-      // Set maxrate and bufsize to enforce the ceiling tightly (prevents overshooting)
-      const maxrateK  = Math.floor(videoBitrateK * 1.25);
-      const bufsizeK  = Math.floor(videoBitrateK * 2);
-
-      setProgress(15, 'Encoding…', `Target: ${videoBitrateK}k video · scale to 720p · 30fps`);
-      await ffmpeg.exec([
+      setProgress(15, 'Encoding…', `${videoBitrateK}k · 720p · 30fps`);
+      await ff.exec([
         '-y', '-i', inputName,
         '-c:v', 'libx264',
         '-b:v', `${videoBitrateK}k`,
@@ -753,36 +710,30 @@
       ]);
 
       setProgress(97, 'Finalising…', 'Reading output…');
-
-      const data = await ffmpeg.readFile('output.mp4');
-      const blob = new Blob([data.buffer], { type: 'video/mp4' });
-
-      // Cleanup
-      try { await ffmpeg.deleteFile(inputName); }    catch(_) {}
-      try { await ffmpeg.deleteFile('output.mp4'); } catch(_) {}
+      const data = await ff.readFile('output.mp4');
+      const blob2 = new Blob([data.buffer], { type: 'video/mp4' });
+      try { await ff.deleteFile(inputName); }    catch(_){}
+      try { await ff.deleteFile('output.mp4'); } catch(_){}
 
       setProgress(100, 'Done!', 'Compression complete!');
+      outputUrl = URL.createObjectURL(blob2);
+      const dl = document.getElementById('downloadBtn');
+      dl.href     = outputUrl;
+      dl.download = selectedFile.name.replace(/\.[^.]+$/, '_compressed.mp4');
+      showResult(origSize, blob2.size);
 
-      outputUrl = URL.createObjectURL(blob);
-      const dlBtn = document.getElementById('downloadBtn');
-      dlBtn.href     = outputUrl;
-      dlBtn.download = selectedFile.name.replace(/\.[^.]+$/, '_compressed.mp4');
-
-      showResult(origSize, blob.size);
-
-    } catch (err) {
+    } catch(err) {
       console.error(err);
       showError(err.message || String(err));
     } finally {
       document.getElementById('compressBtn').disabled = false;
     }
-  }
+  };
 
-  // ── Result UI ────────────────────────────────────────────────────────────────
   function showResult(origBytes, newBytes) {
     const pct = Math.round((1 - newBytes / origBytes) * 100);
-    document.getElementById('origSize').textContent = formatBytes(origBytes);
-    document.getElementById('newSize').textContent  = formatBytes(newBytes);
+    document.getElementById('origSize').textContent = fmtBytes(origBytes);
+    document.getElementById('newSize').textContent  = fmtBytes(newBytes);
     document.getElementById('savings').textContent  = pct + '%';
     const sec = document.getElementById('resultSection');
     sec.classList.remove('error');
@@ -796,14 +747,14 @@
 
   function showAlreadySmall(size) {
     document.getElementById('progressSection').classList.remove('visible');
-    document.getElementById('origSize').textContent = formatBytes(size);
-    document.getElementById('newSize').textContent  = formatBytes(size);
+    document.getElementById('origSize').textContent = fmtBytes(size);
+    document.getElementById('newSize').textContent  = fmtBytes(size);
     document.getElementById('savings').textContent  = '0%';
     const sec = document.getElementById('resultSection');
     sec.classList.remove('error');
     document.getElementById('resultBadge').className = 'result-badge success';
     document.getElementById('resultBadge').innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
-    document.getElementById('resultTitle').textContent = `Already fits your tier! (${formatBytes(size)})`;
+    document.getElementById('resultTitle').textContent = `Already fits! (${fmtBytes(size)})`;
     document.getElementById('downloadBtn').style.display = 'none';
     document.getElementById('errorMsg').style.display    = 'none';
     sec.classList.add('visible');
