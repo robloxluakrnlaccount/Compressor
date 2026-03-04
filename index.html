@@ -548,33 +548,47 @@
 
 </div>
 
-<!-- ffmpeg 0.11 via CDN that sets correct CORS headers -->
-<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
+<!-- ffmpeg 0.12 UMD — worker is bundled inline, no SharedArrayBuffer needed, no CORS issues -->
+<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
 <script>
-  // Polyfill fetchFile from 0.11 API
-  const { createFFmpeg, fetchFile } = FFmpeg;
+  const { FFmpeg } = FFmpegWASM;
 
-  const ffmpeg = createFFmpeg({
-    log: true,
-    corePath: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js',
-    logger: ({ message }) => {
-      const durMatch = message.match(/Duration:\s*(\d+):(\d+):(\d+\.\d+)/);
-      if (durMatch) {
-        totalDuration = parseInt(durMatch[1]) * 3600
-                      + parseInt(durMatch[2]) * 60
-                      + parseFloat(durMatch[3]);
-      }
-      const timeMatch = message.match(/time=(\d+):(\d+):(\d+\.\d+)/);
-      if (timeMatch && totalDuration > 0) {
-        const elapsed = parseInt(timeMatch[1]) * 3600
-                      + parseInt(timeMatch[2]) * 60
-                      + parseFloat(timeMatch[3]);
-        const ratio = Math.min(elapsed / totalDuration, 1);
-        setProgress(Math.round(20 + ratio * 75), 'Encoding…', message.trim());
-        return;
-      }
-      if (message.trim()) setProgress(null, null, message.trim());
+  async function makeBlobURL(url, mimeType) {
+    const res  = await fetch(url);
+    const blob = await res.blob();
+    return URL.createObjectURL(new Blob([blob], { type: mimeType }));
+  }
+
+  async function fetchFileAsUint8(file) {
+    return new Uint8Array(await file.arrayBuffer());
+  }
+
+  const CORE = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd';
+
+  const ffmpeg = new FFmpeg();
+
+  ffmpeg.on('log', ({ message }) => {
+    const durMatch = message.match(/Duration:\s*(\d+):(\d+):(\d+\.\d+)/);
+    if (durMatch) {
+      totalDuration = parseInt(durMatch[1]) * 3600
+                    + parseInt(durMatch[2]) * 60
+                    + parseFloat(durMatch[3]);
     }
+    const timeMatch = message.match(/time=(\d+):(\d+):(\d+\.\d+)/);
+    if (timeMatch && totalDuration > 0) {
+      const elapsed = parseInt(timeMatch[1]) * 3600
+                    + parseInt(timeMatch[2]) * 60
+                    + parseFloat(timeMatch[3]);
+      const ratio = Math.min(elapsed / totalDuration, 1);
+      setProgress(Math.round(20 + ratio * 75), 'Encoding…', message.trim());
+      return;
+    }
+    if (message.trim()) setProgress(null, null, message.trim());
+  });
+
+  ffmpeg.on('progress', ({ progress }) => {
+    if (progress >= 0 && progress <= 1)
+      setProgress(Math.round(20 + progress * 75), null, null);
   });
 
   let selectedFile  = null;
@@ -671,9 +685,12 @@
     setProgress(0, 'Loading FFmpeg…', null);
 
     try {
-      if (!ffmpeg.isLoaded()) {
+      if (!ffmpeg.loaded) {
         setProgress(3, 'Loading FFmpeg…', 'Downloading engine (~30 MB, one-time)…');
-        await ffmpeg.load();
+        await ffmpeg.load({
+          coreURL: await makeBlobURL(`${CORE}/ffmpeg-core.js`,   'text/javascript'),
+          wasmURL: await makeBlobURL(`${CORE}/ffmpeg-core.wasm`, 'application/wasm'),
+        });
       }
 
       setProgress(8, 'Reading video…', 'Measuring duration…');
@@ -685,7 +702,7 @@
       const ext       = selectedFile.name.split('.').pop().toLowerCase();
       const inputName = 'input.' + ext;
 
-      ffmpeg.FS('writeFile', inputName, await fetchFile(selectedFile));
+      ffmpeg.writeFile(inputName, await fetchFileAsUint8(selectedFile));
 
       // Target bitrate to hit the file size limit.
       // Formula: (targetBytes * 8) / duration = total bits/sec, minus audio.
@@ -697,7 +714,7 @@
       const bufsizeK  = Math.floor(videoBitrateK * 2);
 
       setProgress(15, 'Encoding…', `Target: ${videoBitrateK}k video · scale to 720p · 30fps`);
-      await ffmpeg.run(
+      await ffmpeg.exec([
         '-y', '-i', inputName,
         '-c:v', 'libx264',
         '-b:v', `${videoBitrateK}k`,
@@ -708,16 +725,16 @@
         '-c:a', 'aac', '-b:a', '96k',
         '-movflags', '+faststart',
         'output.mp4'
-      );
+      ]);
 
       setProgress(97, 'Finalising…', 'Reading output…');
 
-      const data = ffmpeg.FS('readFile', 'output.mp4');
+      const data = await ffmpeg.readFile('output.mp4');
       const blob = new Blob([data.buffer], { type: 'video/mp4' });
 
       // Cleanup
-      try { ffmpeg.FS('unlink', inputName); }          catch(_) {}
-      try { ffmpeg.FS('unlink', 'output.mp4'); }       catch(_) {}
+      try { await ffmpeg.deleteFile(inputName); }    catch(_) {}
+      try { await ffmpeg.deleteFile('output.mp4'); } catch(_) {}
 
       setProgress(100, 'Done!', 'Compression complete!');
 
