@@ -548,15 +548,11 @@
 
 </div>
 
-<!-- ffmpeg 0.12 — worker inlined via blob to bypass all CORS restrictions -->
+<!-- ffmpeg 0.12: UMD global loaded via script tag, all assets blobbed from jsDelivr -->
+<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
 <script>
-  // We create the FFmpeg worker inline as a blob so no cross-origin worker is ever constructed.
-  // The worker source is fetched once, turned into a blob URL, and passed to ffmpeg.load().
-  // Core + WASM are also blobbed. Zero cross-origin worker construction = no CORS error.
-
-  const JSDELIVR  = 'https://cdn.jsdelivr.net/npm';
-  const FF        = `${JSDELIVR}/@ffmpeg/ffmpeg@0.12.10/dist/esm`;
-  const CORE      = `${JSDELIVR}/@ffmpeg/core@0.12.6/dist/esm`;
+  const JSD  = 'https://cdn.jsdelivr.net/npm';
+  const CORE = `${JSD}/@ffmpeg/core@0.12.6/dist/umd`;
 
   async function toBlobURL(url, type) {
     const buf = await fetch(url).then(r => r.arrayBuffer());
@@ -564,14 +560,15 @@
   }
 
   async function loadFFmpeg() {
-    // Dynamically import FFmpeg AFTER we have blob URLs ready
-    const workerURL = await toBlobURL(`${FF}/worker.js`, 'text/javascript');
-    const coreURL   = await toBlobURL(`${CORE}/ffmpeg-core.js`, 'text/javascript');
-    const wasmURL   = await toBlobURL(`${CORE}/ffmpeg-core.wasm`, 'application/wasm');
-
-    const { FFmpeg } = await import(`${FF}/index.js`);
+    const { FFmpeg } = FFmpegWASM;
     const ff = new FFmpeg();
-    await ff.load({ workerURL, coreURL, wasmURL });
+    await ff.load({
+      // jsDelivr sets correct CORS headers so fetch() works fine.
+      // Blobbing the worker means new Worker(blobURL) is always same-origin — no CORS block.
+      workerURL: await toBlobURL(`${JSD}/@ffmpeg/ffmpeg@0.12.10/dist/umd/814.ffmpeg.js`, 'text/javascript'),
+      coreURL:   await toBlobURL(`${CORE}/ffmpeg-core.js`,   'text/javascript'),
+      wasmURL:   await toBlobURL(`${CORE}/ffmpeg-core.wasm`, 'application/wasm'),
+    });
     return ff;
   }
 
